@@ -10,6 +10,7 @@ use paho_mqtt::{AsyncReceiver, DeliveryToken, Message, MessageBuilder, Propertie
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use log::warn;
+use byteorder::{LittleEndian, ReadBytesExt};
 
 #[pin_project]
 pub struct ClientTransport<Res> {
@@ -65,13 +66,13 @@ impl<Req, Res> Sink<ClientMessage<Req>> for ClientTransport<Res> where Req: Debu
         let mut props = Properties::new();
 
         let rid = match item {
-            ClientMessage::Request(ref r) => r.id,
+            ClientMessage::Request(ref r) => r.request_id,
             ClientMessage::Cancel { request_id, .. } => request_id,
             _ => unreachable!()
         };
 
         let deadline = match item {
-            ClientMessage::Request(ref r) => Some(r.context.deadline),
+            ClientMessage::Request(ref r) => Some(*r.context.deadline),
             _ => None
         }.and_then(|deadline| deadline.duration_since(SystemTime::now()).ok()).as_ref().map(Duration::as_secs);
 
@@ -118,6 +119,16 @@ impl<Req, Res> Sink<ClientMessage<Req>> for ClientTransport<Res> where Req: Debu
     }
 }
 
+impl<Res> ClientTransport<Res> where Res: Debug + DeserializeOwned {
+    fn decode_message(msg: &Message) -> <Self as Stream>::Item {
+        let mut m: Response<Res> = serde_json::from_slice(msg.payload())?;
+        let correlation_data = msg.properties().get_binary(PropertyCode::CorrelationData).unwrap();
+        m.request_id = correlation_data.as_slice().read_u64::<LittleEndian>().unwrap();
+
+        Ok(m)
+    }
+}
+
 impl<Res> Stream for ClientTransport<Res> where Res: Debug + DeserializeOwned {
     type Item = Result<Response<Res>, crate::Error>;
 
@@ -125,16 +136,18 @@ impl<Res> Stream for ClientTransport<Res> where Res: Debug + DeserializeOwned {
         let mut this = self.project();
 
         loop {
-            let e : Result<!, crate::Error> = match this.stream.as_mut().poll_next(cx) {
+            let msg = match this.stream.as_mut().poll_next(cx) {
                 Poll::Ready(None) => break Poll::Ready(None),
                 Poll::Ready(Some(None)) => continue, // Mqtt Disconnecting
-                Poll::Ready(Some(Some(msg))) => try {
-                    break Poll::Ready(Some(Ok(serde_json::from_slice(msg.payload())?)))
-                },
+                Poll::Ready(Some(Some(msg))) => msg,
                 Poll::Pending => break Poll::Pending
             };
 
-            warn!("ClientTransport: Dropping malformed MQTT Message {:?}", e);
+            if let Ok(m) = ClientTransport::decode_message(&msg) {
+                break Poll::Ready(Some(Ok(m)));
+            } else {
+                warn!("ClientTransport: Dropping malformed MQTT Message {:?}", msg);
+            }
         }
 
 
