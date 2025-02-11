@@ -8,7 +8,6 @@ use futures::{prelude::*};
 use paho_mqtt::{AsyncReceiver, DeliveryToken, Message, MessageBuilder, Properties, PropertyCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use log::warn;
 use tarpc::context::Context;
 
 #[pin_project]
@@ -37,19 +36,24 @@ impl<Req> ServerTransport<Req> {
         let stream = client.get_stream(25);
 
         let rt = request_topic.clone();
+        let system = actix::System::current();
+
         client.set_connected_callback(move |cli| {
-            let sys = actix::System::new();
-            log::error!("Re-Subscribe to {}", rt);
+            let cli = cli.clone();
+            let rt2 = rt.clone();
+            let start = std::time::Instant::now();
 
-            sys.block_on(async {
-                actix::System::current().arbiter().spawn(cli.subscribe(rt.clone(), 1).map(|_| ()));
+            system.arbiter().spawn(async move {
+                log::error!("Re-Subscribe to {} start", rt2);
+                cli.subscribe(rt2.clone(), 1).map(|_| ()).await;
+                log::warn!("Re-Subscribe to {} finished. Waited {} us", rt2, start.elapsed().as_micros());
             });
-
-            log::error!("Re-Subscribe to {} end", rt);
         });
 
-        log::error!("Subscribe to {}", request_topic);
-        client.subscribe(request_topic.clone(), 1).await.unwrap();
+        if client.is_connected() {
+            log::warn!("Client already connected - subscribe to {}", request_topic);
+            client.subscribe(request_topic.clone(), 1).await.unwrap();
+        }
 
         ServerTransport { client, request_topic: request_topic, stream, delivery_token: None, phantom: PhantomData::default() }
     }
@@ -171,7 +175,7 @@ impl<Req> Stream for ServerTransport<Req> where Req: DeserializeOwned + Debug {
 
             match ServerTransport::decode_mqtt_message(&msg) {
                 Ok(m) => break Poll::Ready(Some(Ok(m))),
-                Err(e) => warn!("ServerTransport: Error decoding MQTT Message: {:?}", e)
+                Err(e) => log::warn!("ServerTransport: Error decoding MQTT Message: {:?}", e)
             }
         }
     }
