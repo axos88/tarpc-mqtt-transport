@@ -126,10 +126,7 @@ pub struct MqttTransportExtension {
 
 impl<Req> ServerTransport<Req> where Req: DeserializeOwned + Debug {
     fn decode_mqtt_message(msg: &Message) -> Result<ClientMessage<Req>, crate::Error> {
-        warn!("{:?}", msg.payload_str());
-
-
-        let mut m: ClientMessage<Req> = serde_json::from_slice(msg.payload()).map_err(|err| paho_mqtt::Error::GeneralString(format!("ServerTransport: Dropping malformed MQTT Message {:?}. Error: {:?}", String::from_utf8_lossy(msg.payload()), err)))?;
+        let mut m: ClientMessage<Req> = serde_json::from_slice(msg.payload()).map_err(|err| paho_mqtt::Error::GeneralString(format!("Malformed MQTT Message {:?}. Error: {:?}", String::from_utf8_lossy(msg.payload()), err)))?;
 
         log::info!("Got Client Message {:?}", m);
 
@@ -172,10 +169,9 @@ impl<Req> Stream for ServerTransport<Req> where Req: DeserializeOwned + Debug {
                 Poll::Pending => break Poll::Pending
             };
 
-            if let Ok(m) = ServerTransport::decode_mqtt_message(&msg) {
-                break Poll::Ready(Some(Ok(m)));
-            } else {
-                warn!("ServerTransport: Dropping malformed MQTT Message {:?}", msg);
+            match ServerTransport::decode_mqtt_message(&msg) {
+                Ok(m) => break Poll::Ready(Some(Ok(m))),
+                Err(e) => warn!("ServerTransport: Error decoding MQTT Message: {:?}", e)
             }
         }
     }
