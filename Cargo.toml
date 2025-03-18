@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 
-paho-mqtt = "0.12.0"
+paho-mqtt = { version = "0.12.0", default-features = false }
 tokio = { version = "1", features = ["full"] }
 tarpc = { git = "https://github.com/axos88/tarpc.git", branch = "request-context", features = ["serde1"] }
 #anyhow = "*"
