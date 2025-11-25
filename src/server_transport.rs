@@ -8,7 +8,7 @@ use futures::{prelude::*};
 use paho_mqtt::{AsyncReceiver, DeliveryToken, Message, MessageBuilder, Properties, PropertyCode};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use tarpc::context::Context;
+use tarpc::context::{ServerContext, SharedContext};
 
 #[pin_project]
 pub struct ServerTransport<Req> {
@@ -24,7 +24,7 @@ pub struct ServerTransport<Req> {
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct ServerContext {
+pub struct MqttServerContext {
     pub response_topic: String,
     pub correlation: Vec<u8>
 }
@@ -36,14 +36,13 @@ impl<Req> ServerTransport<Req> {
         let stream = client.get_stream(25);
 
         let rt = request_topic.clone();
-        let system = actix::System::current();
 
         client.set_connected_callback(move |cli| {
             let cli = cli.clone();
             let rt2 = rt.clone();
             let start = std::time::Instant::now();
 
-            system.arbiter().spawn(async move {
+            tokio::spawn(async move {
                 log::error!("Re-Subscribe to {} start", rt2);
                 cli.subscribe(rt2.clone(), 1).map(|_| ()).await;
                 log::warn!("Re-Subscribe to {} finished. Waited {} us", rt2, start.elapsed().as_micros());
@@ -61,7 +60,7 @@ impl<Req> ServerTransport<Req> {
 
 
 
-impl<Req, Res> Sink<Response<Res>> for ServerTransport<Req> where Res: Debug + Serialize {
+impl<Req, Res> Sink<Response<ServerContext, Res>> for ServerTransport<Req> where Res: Debug + Serialize {
     type Error = crate::Error;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -73,17 +72,15 @@ impl<Req, Res> Sink<Response<Res>> for ServerTransport<Req> where Res: Debug + S
         }
     }
 
-    fn start_send(mut self: Pin<&mut Self>, item: Response<Res>) -> Result<(), Self::Error> {
+    fn start_send(mut self: Pin<&mut Self>, item: Response<ServerContext, Res>) -> Result<(), Self::Error> {
         let response = item;
-        let context = response.context.extensions.get::<MqttTransportExtension>();
+        let context = response.context.server_context.get::<MqttTransportExtension>();
 
+        let context = context.unwrap().clone();
+
+        let response = response.map_context(|ctx| ctx.shared_context);
         log::info!("Sending response {:?}", response);
         log::info!("response context =  {:?}", context);
-        log::info!("context::current {:?}", Context::current());
-        log::info!("context::current {:?}", Context::current().extensions.get::<MqttTransportExtension>());
-
-        let context = context.unwrap();
-
 
         let data = serde_json::to_vec(&response)?;
 
@@ -129,8 +126,9 @@ pub struct MqttTransportExtension {
 
 
 impl<Req> ServerTransport<Req> where Req: DeserializeOwned + Debug {
-    fn decode_mqtt_message(msg: &Message) -> Result<ClientMessage<Req>, crate::Error> {
-        let mut m: ClientMessage<Req> = serde_json::from_slice(msg.payload()).map_err(|err| paho_mqtt::Error::GeneralString(format!("Malformed MQTT Message {:?}. Error: {:?}", String::from_utf8_lossy(msg.payload()), err)))?;
+    fn decode_mqtt_message(msg: &Message) -> Result<ClientMessage<ServerContext, Req>, crate::Error> {
+        let m: ClientMessage<SharedContext, Req> = serde_json::from_slice(msg.payload()).map_err(|err| paho_mqtt::Error::GeneralString(format!("Malformed MQTT Message {:?}. Error: {:?}", String::from_utf8_lossy(msg.payload()), err)))?;
+        let mut m = m.map_context(ServerContext::new);
 
         log::info!("Got Client Message {:?}", m);
 
@@ -139,7 +137,7 @@ impl<Req> ServerTransport<Req> where Req: DeserializeOwned + Debug {
         let correlation = msg.properties().get_binary(PropertyCode::CorrelationData).ok_or(paho_mqtt::Error::General("CorrelationData property not found"))?;
 
         let request_id = match m {
-            ClientMessage::Request(ref mut r) => &mut r.request_id,
+            ClientMessage::Request(ref mut r) => &mut r.id,
             ClientMessage::Cancel {ref mut request_id, ..} => request_id,
             _ => unimplemented!()
         };
@@ -150,7 +148,7 @@ impl<Req> ServerTransport<Req> where Req: DeserializeOwned + Debug {
 
 
         if let ClientMessage::Request(ref mut r) = m {
-            r.context.extensions.insert(MqttTransportExtension { response_topic, correlation_data: correlation });
+            r.context.server_context.insert(MqttTransportExtension { response_topic, correlation_data: correlation });
         }
 
         Ok(m)
@@ -160,7 +158,7 @@ impl<Req> ServerTransport<Req> where Req: DeserializeOwned + Debug {
 
 
 impl<Req> Stream for ServerTransport<Req> where Req: DeserializeOwned + Debug {
-    type Item = Result<ClientMessage<Req>, crate::Error>;
+    type Item = Result<ClientMessage<ServerContext, Req>, crate::Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();

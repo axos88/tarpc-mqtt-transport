@@ -3,14 +3,15 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::Poll;
-use std::time::{Duration, SystemTime};
+use std::time::{Instant};
 use tarpc::{ClientMessage, Response};
 use futures::{prelude::*};
 use paho_mqtt::{AsyncReceiver, DeliveryToken, Message, MessageBuilder, Properties, PropertyCode, Token};
 use serde::Serialize;
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned};
 use log::warn;
 use byteorder::{LittleEndian, ReadBytesExt};
+use tarpc::context::{ClientContext, SharedContext};
 
 #[pin_project]
 pub struct ClientTransport<Res> {
@@ -48,7 +49,7 @@ impl<Res> ClientTransport<Res> {
 
 
 
-impl<Req, Res> Sink<ClientMessage<Req>> for ClientTransport<Res> where Req: Debug + Serialize {
+impl<Req, Res> Sink<ClientMessage<ClientContext, Req>> for ClientTransport<Res> where Req: Debug + Serialize {
     type Error = crate::Error;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -60,25 +61,25 @@ impl<Req, Res> Sink<ClientMessage<Req>> for ClientTransport<Res> where Req: Debu
         }
     }
 
-    fn start_send(mut self: Pin<&mut Self>, item: ClientMessage<Req>) -> Result<(), Self::Error> {
-        let data = serde_json::to_vec(&item)?;
-
+    fn start_send(mut self: Pin<&mut Self>, item: ClientMessage<ClientContext, Req>) -> Result<(), Self::Error> {
         let mut props = Properties::new();
 
         let rid = match item {
-            ClientMessage::Request(ref r) => r.request_id,
+            ClientMessage::Request(ref r) => r.id,
             ClientMessage::Cancel { request_id, .. } => request_id,
             _ => unreachable!()
         };
 
         let deadline = match item {
-            ClientMessage::Request(ref r) => Some(*r.context.deadline),
+            ClientMessage::Request(ref r) => Some(r.context.shared_context.deadline),
             _ => None
-        }.and_then(|deadline| deadline.duration_since(SystemTime::now()).ok()).as_ref().map(Duration::as_secs);
+        }.map(|deadline| deadline.duration_since(Instant::now()).as_secs());
 
         props.push_binary(PropertyCode::CorrelationData, rid.to_le_bytes())?;
         props.push_string(PropertyCode::ResponseTopic, &self.response_topic)?;
         deadline.map_or(Ok(()), |d| props.push_int(PropertyCode::MessageExpiryInterval, (d+1) as i32))?;
+
+        let data = serde_json::to_vec(&item.map_context(|ctx| ctx.shared_context))?;
 
         let msg = MessageBuilder::new().payload(data).topic(&self.request_topic).qos(1).properties(props).finalize();
 
@@ -121,7 +122,9 @@ impl<Req, Res> Sink<ClientMessage<Req>> for ClientTransport<Res> where Req: Debu
 
 impl<Res> ClientTransport<Res> where Res: Debug + DeserializeOwned {
     fn decode_message(msg: &Message) -> <Self as Stream>::Item {
-        let mut m: Response<Res> = serde_json::from_slice(msg.payload())?;
+        let mut m: Response<SharedContext, Res> = serde_json::from_slice(msg.payload())?;
+
+        let mut m = m.map_context(ClientContext::new);
         let correlation_data = msg.properties().get_binary(PropertyCode::CorrelationData).unwrap();
         m.request_id = correlation_data.as_slice().read_u64::<LittleEndian>().unwrap();
 
@@ -130,7 +133,7 @@ impl<Res> ClientTransport<Res> where Res: Debug + DeserializeOwned {
 }
 
 impl<Res> Stream for ClientTransport<Res> where Res: Debug + DeserializeOwned {
-    type Item = Result<Response<Res>, crate::Error>;
+    type Item = Result<Response<ClientContext, Res>, crate::Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
