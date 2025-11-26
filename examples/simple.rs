@@ -7,7 +7,6 @@ use futures::StreamExt;
 use log::{info, warn};
 use paho_mqtt::{Property, PropertyCode, SslOptions};
 use tarpc::{client, context};
-use tarpc::client::new;
 use tarpc::context::{ExtractContext};
 use tarpc::server::{BaseChannel, Channel};
 use tarpc_mqtt_transport::MqttServerContext;
@@ -37,7 +36,6 @@ impl World for HelloServer {
 
 struct ClientContext {
   shared: context::Context,
-  foo: String,
 }
 
 impl ExtractContext<context::Context> for ClientContext {
@@ -54,7 +52,6 @@ impl From<context::Context> for ClientContext {
   fn from(value: context::Context) -> Self {
     Self {
       shared: value,
-      foo: "".to_string()
     }
   }
 }
