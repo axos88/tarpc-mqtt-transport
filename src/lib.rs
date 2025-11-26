@@ -4,6 +4,7 @@ extern crate pin_project;
 mod error;
 mod client_transport;
 mod server_transport;
+mod util;
 
 pub use error::*;
 pub use client_transport::*;

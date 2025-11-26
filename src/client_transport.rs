@@ -4,17 +4,18 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::Poll;
 use std::time::{Instant};
-use tarpc::{ClientMessage, Response};
+use tarpc::{context, ClientMessage, Response};
 use futures::{prelude::*};
 use paho_mqtt::{AsyncReceiver, DeliveryToken, Message, MessageBuilder, Properties, PropertyCode, Token};
 use serde::Serialize;
 use serde::de::{DeserializeOwned};
 use log::warn;
 use byteorder::{LittleEndian, ReadBytesExt};
-use tarpc::context::{ClientContext, SharedContext};
+use tarpc::context::{ExtractContext};
+use crate::util::{ClientMessageMapper, ResponseMapper};
 
 #[pin_project]
-pub struct ClientTransport<Res> {
+pub struct ClientTransport<ClientCtx, Res> {
     #[pin]
     client: paho_mqtt::AsyncClient,
     #[pin]
@@ -27,11 +28,11 @@ pub struct ClientTransport<Res> {
     request_topic: String,
     response_topic: String,
 
-    phantom: PhantomData<Res>
+    phantom: PhantomData<(ClientCtx, Res)>
 }
 
-impl<Res> ClientTransport<Res> {
-    pub fn new<T: Into<String>, U: Into<String>>(mut client: paho_mqtt::AsyncClient, request_topic: T, response_topic: U) -> ClientTransport<Res> {
+impl<ClientCtx, Res> ClientTransport<ClientCtx, Res> {
+    pub fn new<T: Into<String>, U: Into<String>>(mut client: paho_mqtt::AsyncClient, request_topic: T, response_topic: U) -> ClientTransport<ClientCtx, Res> {
         let request_topic = request_topic.into();
         let response_topic = response_topic.into();
         let stream = client.get_stream(25);
@@ -43,13 +44,15 @@ impl<Res> ClientTransport<Res> {
 
         client.subscribe(response_topic.clone(), 1);
 
-        ClientTransport { client, stream, request_topic, response_topic, delivery_token: None, disconnect_token: None, phantom: PhantomData::default() }
+        ClientTransport { client, stream, request_topic, response_topic, delivery_token: None, disconnect_token: None, phantom: PhantomData }
     }
 }
 
 
 
-impl<Req, Res> Sink<ClientMessage<ClientContext, Req>> for ClientTransport<Res> where Req: Debug + Serialize {
+impl<Req, Res, ClientCtx> Sink<ClientMessage<ClientCtx, Req>> for ClientTransport<ClientCtx, Res> where Req: Debug + Serialize,
+    ClientCtx: ExtractContext<context::Context> + From<context::Context>
+{
     type Error = crate::Error;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -61,7 +64,7 @@ impl<Req, Res> Sink<ClientMessage<ClientContext, Req>> for ClientTransport<Res> 
         }
     }
 
-    fn start_send(mut self: Pin<&mut Self>, item: ClientMessage<ClientContext, Req>) -> Result<(), Self::Error> {
+    fn start_send(mut self: Pin<&mut Self>, item: ClientMessage<ClientCtx, Req>) -> Result<(), Self::Error> {
         let mut props = Properties::new();
 
         let rid = match item {
@@ -71,7 +74,7 @@ impl<Req, Res> Sink<ClientMessage<ClientContext, Req>> for ClientTransport<Res> 
         };
 
         let deadline = match item {
-            ClientMessage::Request(ref r) => Some(r.context.shared_context.deadline),
+            ClientMessage::Request(ref r) => Some(r.context.extract().deadline),
             _ => None
         }.map(|deadline| deadline.duration_since(Instant::now()).as_secs());
 
@@ -79,7 +82,7 @@ impl<Req, Res> Sink<ClientMessage<ClientContext, Req>> for ClientTransport<Res> 
         props.push_string(PropertyCode::ResponseTopic, &self.response_topic)?;
         deadline.map_or(Ok(()), |d| props.push_int(PropertyCode::MessageExpiryInterval, (d+1) as i32))?;
 
-        let data = serde_json::to_vec(&item.map_context(|ctx| ctx.shared_context))?;
+        let data = serde_json::to_vec(&item.map_context(|ctx| ctx.extract()))?;
 
         let msg = MessageBuilder::new().payload(data).topic(&self.request_topic).qos(1).properties(props).finalize();
 
@@ -120,11 +123,14 @@ impl<Req, Res> Sink<ClientMessage<ClientContext, Req>> for ClientTransport<Res> 
     }
 }
 
-impl<Res> ClientTransport<Res> where Res: Debug + DeserializeOwned {
+impl<Res, ClientCtx> ClientTransport<ClientCtx, Res> where
+  Res: Debug + DeserializeOwned,
+  ClientCtx: ExtractContext<context::Context> + From<context::Context>
+{
     fn decode_message(msg: &Message) -> <Self as Stream>::Item {
-        let mut m: Response<SharedContext, Res> = serde_json::from_slice(msg.payload())?;
-
-        let mut m = m.map_context(ClientContext::new);
+        let m: Response<context::Context, Res> = serde_json::from_slice(msg.payload())?;
+        let mut m = m.map_context(ClientCtx::from);
+        
         let correlation_data = msg.properties().get_binary(PropertyCode::CorrelationData).unwrap();
         m.request_id = correlation_data.as_slice().read_u64::<LittleEndian>().unwrap();
 
@@ -132,8 +138,11 @@ impl<Res> ClientTransport<Res> where Res: Debug + DeserializeOwned {
     }
 }
 
-impl<Res> Stream for ClientTransport<Res> where Res: Debug + DeserializeOwned {
-    type Item = Result<Response<ClientContext, Res>, crate::Error>;
+impl<ClientCtx, Res> Stream for ClientTransport<ClientCtx, Res> where
+  Res: Debug + DeserializeOwned,
+  ClientCtx: ExtractContext<context::Context> + From<context::Context>
+{
+    type Item = Result<Response<ClientCtx, Res>, crate::Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();

@@ -1,15 +1,16 @@
 use std::io::Write;
 use std::error::Error;
 use std::string::ToString;
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use env_logger::Builder;
 use futures::StreamExt;
 use log::{info, warn};
 use paho_mqtt::{Property, PropertyCode, SslOptions};
 use tarpc::{client, context};
-use tarpc::context::ClientContext;
+use tarpc::client::new;
+use tarpc::context::{ExtractContext};
 use tarpc::server::{BaseChannel, Channel};
-use std::fmt::Write as FmtWrite;
+use tarpc_mqtt_transport::MqttServerContext;
 
 #[tarpc::service]
 pub trait World {
@@ -25,7 +26,8 @@ const REQUEST_TOPIC: &str = "/tarpc-mqtt-example-requests";
 const RESPONSE_TOPIC: &str = "/tarpc-mqtt-example-response";
 
 impl World for HelloServer {
-  async fn hello(self, ctx: &mut context::ServerContext, name: String) -> String {
+  type Context = MqttServerContext;
+  async fn hello(self, ctx: &mut Self::Context, name: String) -> String {
     println!("Server sees deadline in... {:?}", ctx.deadline.duration_since(Instant::now()));
     ctx.deadline = ctx.deadline.checked_add(Duration::from_secs(10)).unwrap();
     format!("Hello, {name}!")
@@ -33,10 +35,35 @@ impl World for HelloServer {
 }
 
 
+struct ClientContext {
+  shared: context::Context,
+  foo: String,
+}
 
-async fn client() -> WorldClient {
+impl ExtractContext<context::Context> for ClientContext {
+  fn extract(&self) -> context::Context {
+    self.shared.clone()
+  }
+
+  fn update(&mut self, value: context::Context) {
+    self.shared = value;
+  }
+}
+
+impl From<context::Context> for ClientContext {
+  fn from(value: context::Context) -> Self {
+    Self {
+      shared: value,
+      foo: "".to_string()
+    }
+  }
+}
+
+
+
+async fn client() -> WorldClient::<ClientContext> {
   let transport = tarpc_mqtt_transport::ClientTransport::new(build_mqtt_client().await, REQUEST_TOPIC, RESPONSE_TOPIC);
-  let client = WorldClient::new(client::Config::default(), transport);
+  let client = WorldClient::<ClientContext>::new(client::Config::default(), transport);
 
   client.spawn()
 }
@@ -82,15 +109,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
   server().await;
   let client = client().await;
 
-  let mut context = ClientContext::current();
+  let mut context = ClientContext::from(context::Context::current());
 
 
   let resp = client.hello(&mut context, "abc".to_string()).await;
-  warn!("Response = {:?}, deadline = {:?}", resp, context.deadline.duration_since(Instant::now()));
+  warn!("Response = {:?}, deadline = {:?}", resp, context.shared.deadline.duration_since(Instant::now()));
   let resp = client.hello(&mut context, "def".to_string()).await;
-  warn!("Response = {:?}, deadline = {:?}", resp, context.deadline.duration_since(Instant::now()));
+  warn!("Response = {:?}, deadline = {:?}", resp, context.shared.deadline.duration_since(Instant::now()));
   let resp = client.hello(&mut context, "ghi".to_string()).await;
-  warn!("Response = {:?}, deadline = {:?}", resp, context.deadline.duration_since(Instant::now()));
+  warn!("Response = {:?}, deadline = {:?}", resp, context.shared.deadline.duration_since(Instant::now()));
 
   Ok(())
 }
