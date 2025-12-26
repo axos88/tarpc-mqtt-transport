@@ -8,12 +8,12 @@ use tarpc::{context, trace, ClientMessage, Response};
 use futures::{prelude::*};
 use paho_mqtt::{AsyncReceiver, DeliveryToken, Message, MessageBuilder, Properties, PropertyCode};
 use serde::de::DeserializeOwned;
-use serde::Serialize;
-use tarpc::context::{ExtractContext};
+use serde::{Deserialize, Serialize};
+use tarpc::context::{ExtractContext, SharedContext};
 use crate::util::{ClientMessageMapper, ResponseMapper};
 
 #[pin_project]
-pub struct ServerTransport<Req> {
+pub struct ServerTransport<Req, SharedCtx> {
     #[pin]
     client: paho_mqtt::AsyncClient,
     #[pin]
@@ -22,36 +22,24 @@ pub struct ServerTransport<Req> {
     delivery_token: Option<DeliveryToken>,
 
     request_topic: String,
-    phantom: PhantomData<Req>
+    phantom: PhantomData<(Req, SharedCtx)>
 }
 
 #[derive(Debug, Clone)]
-pub struct MqttServerContext {
-    pub deadline: Instant,
-    pub trace_context: trace::Context,
-
-    pub foo: String,
+pub struct MqttServerContext<SharedCtx: SharedContext + Clone> {
+    pub shared: SharedCtx,
     pub response_topic: String,
     pub correlation: Vec<u8>,
 }
 
-impl ExtractContext<context::Context> for MqttServerContext {
-    fn extract(&self) -> context::Context {
-        context::Context {
-            deadline: self.deadline,
-            trace_context: self.trace_context.clone(),
-        }
-    }
-
-    fn update(&mut self, other: context::Context) {
-        self.deadline = other.deadline;
-        self.trace_context = other.trace_context
+impl<SharedCtx: SharedContext + Clone> ExtractContext<SharedCtx> for MqttServerContext<SharedCtx> {
+    fn extract(&self) -> SharedCtx {
+        self.shared.clone()
     }
 }
 
-
-impl<Req> ServerTransport<Req> {
-    pub async fn new<T: Into<String>>(mut client: paho_mqtt::AsyncClient, request_topic: T) -> ServerTransport<Req> {
+impl<Req, SharedCtx> ServerTransport<Req, SharedCtx> {
+    pub async fn new<T: Into<String>>(mut client: paho_mqtt::AsyncClient, request_topic: T) -> ServerTransport<Req, SharedCtx> {
         let request_topic = request_topic.into();
         let stream = client.get_stream(25);
 
@@ -80,7 +68,7 @@ impl<Req> ServerTransport<Req> {
 
 
 
-impl<Req, Res> Sink<Response<MqttServerContext, Res>> for ServerTransport<Req> where Res: Debug + Serialize {
+impl<Req, Res, SharedCtx: SharedContext + Clone + Debug + Serialize> Sink<Response<MqttServerContext<SharedCtx>, Res>> for ServerTransport<Req, SharedCtx> where Res: Debug + Serialize {
     type Error = crate::Error;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -92,7 +80,7 @@ impl<Req, Res> Sink<Response<MqttServerContext, Res>> for ServerTransport<Req> w
         }
     }
 
-    fn start_send(mut self: Pin<&mut Self>, item: Response<MqttServerContext, Res>) -> Result<(), Self::Error> {
+    fn start_send(mut self: Pin<&mut Self>, item: Response<MqttServerContext<SharedCtx>, Res>) -> Result<(), Self::Error> {
         let response = item;
 
         log::info!("Sending response {:?}", response);
@@ -101,7 +89,7 @@ impl<Req, Res> Sink<Response<MqttServerContext, Res>> for ServerTransport<Req> w
         props.push_binary(PropertyCode::CorrelationData, response.context.correlation.clone())?;
         let msg = MessageBuilder::new().topic(&response.context.response_topic).qos(1).properties(props);
 
-        let response: Response<context::Context, _> = response.map_context(|ctx| ctx.extract());
+        let response: Response<SharedCtx, _> = response.map_context(|ctx| ctx.extract());
         log::info!("response context =  {:?}", response.context);
 
         let data = serde_json::to_vec(&response)?;
@@ -133,18 +121,16 @@ impl<Req, Res> Sink<Response<MqttServerContext, Res>> for ServerTransport<Req> w
     }
 }
 
-impl<Req> ServerTransport<Req> where Req: DeserializeOwned + Debug {
-    fn decode_mqtt_message(msg: &Message) -> Result<ClientMessage<MqttServerContext, Req>, crate::Error> {
-        let m: ClientMessage<context::Context, Req> = serde_json::from_slice(msg.payload()).map_err(|err| paho_mqtt::Error::GeneralString(format!("Malformed MQTT Message {:?}. Error: {:?}", String::from_utf8_lossy(msg.payload()), err)))?;
+impl<Req, SharedCtx: Clone + SharedContext + DeserializeOwned + Debug> ServerTransport<Req, SharedCtx> where Req: DeserializeOwned + Debug {
+    fn decode_mqtt_message(msg: &Message) -> Result<ClientMessage<MqttServerContext<SharedCtx>, Req>, crate::Error> {
+        let m: ClientMessage<SharedCtx, Req> = serde_json::from_slice(msg.payload()).map_err(|err| paho_mqtt::Error::GeneralString(format!("Malformed MQTT Message {:?}. Error: {:?}", String::from_utf8_lossy(msg.payload()), err)))?;
         let response_topic = msg.properties().get_string(PropertyCode::ResponseTopic).ok_or(paho_mqtt::Error::General("Response topic property not found"))?;
         let correlation = msg.properties().get_binary(PropertyCode::CorrelationData).ok_or(paho_mqtt::Error::General("CorrelationData property not found"))?;
 
         log::info!("Got Client Message {:?}", m);
 
-        let mut m = m.map_context(|ctx| MqttServerContext {
-            deadline: ctx.deadline,
-            trace_context: ctx.trace_context,
-            foo: "foo".to_string(),
+        let mut m = m.map_context(|shared| MqttServerContext::<SharedCtx> {
+            shared,
             response_topic: response_topic.clone(),
             correlation: correlation.clone()
         });
@@ -166,8 +152,8 @@ impl<Req> ServerTransport<Req> where Req: DeserializeOwned + Debug {
 
 
 
-impl<Req> Stream for ServerTransport<Req> where Req: DeserializeOwned + Debug {
-    type Item = Result<ClientMessage<MqttServerContext, Req>, crate::Error>;
+impl<Req, SharedCtx: Clone + SharedContext + DeserializeOwned + Debug> Stream for ServerTransport<Req, SharedCtx> where Req: DeserializeOwned + Debug {
+    type Item = Result<ClientMessage<MqttServerContext<SharedCtx>, Req>, crate::Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Option<Self::Item>> {
         let mut this = self.project();

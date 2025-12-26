@@ -11,7 +11,7 @@ use serde::Serialize;
 use serde::de::{DeserializeOwned};
 use log::warn;
 use byteorder::{LittleEndian, ReadBytesExt};
-use tarpc::context::{ExtractContext};
+use tarpc::context::{ExtractContext, UpdateContext};
 use crate::util::{ClientMessageMapper, ResponseMapper};
 
 #[pin_project]
@@ -51,7 +51,7 @@ impl<ClientCtx, Res> ClientTransport<ClientCtx, Res> {
 
 
 impl<Req, Res, ClientCtx> Sink<ClientMessage<ClientCtx, Req>> for ClientTransport<ClientCtx, Res> where Req: Debug + Serialize,
-    ClientCtx: ExtractContext<context::Context> + From<context::Context>
+    ClientCtx: ExtractContext<context::DefaultContext>
 {
     type Error = crate::Error;
 
@@ -125,10 +125,10 @@ impl<Req, Res, ClientCtx> Sink<ClientMessage<ClientCtx, Req>> for ClientTranspor
 
 impl<Res, ClientCtx> ClientTransport<ClientCtx, Res> where
   Res: Debug + DeserializeOwned,
-  ClientCtx: ExtractContext<context::Context> + From<context::Context>
+  ClientCtx: UpdateContext<context::DefaultContext> + From<context::DefaultContext>
 {
     fn decode_message(msg: &Message) -> <Self as Stream>::Item {
-        let m: Response<context::Context, Res> = serde_json::from_slice(msg.payload())?;
+        let m: Response<context::DefaultContext, Res> = serde_json::from_slice(msg.payload())?;
         let mut m = m.map_context(ClientCtx::from);
         
         let correlation_data = msg.properties().get_binary(PropertyCode::CorrelationData).unwrap();
@@ -140,7 +140,7 @@ impl<Res, ClientCtx> ClientTransport<ClientCtx, Res> where
 
 impl<ClientCtx, Res> Stream for ClientTransport<ClientCtx, Res> where
   Res: Debug + DeserializeOwned,
-  ClientCtx: ExtractContext<context::Context> + From<context::Context>
+  ClientCtx: UpdateContext<context::DefaultContext> + From<context::DefaultContext>
 {
     type Item = Result<Response<ClientCtx, Res>, crate::Error>;
 

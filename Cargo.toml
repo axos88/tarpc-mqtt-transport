@@ -9,8 +9,8 @@ edition = "2021"
 
 paho-mqtt = { version = "0.12.0", default-features = false }
 tokio = { version = "1", features = ["full"] }
-tarpc = { git = "https://github.com/axos88/tarpc.git", branch = "separate-client-and-server-context", features = ["serde1"] }
-#tarpc = { git = "https://github.com/axos88/tarpc.git", branch = "add-anymap-to-context", features = ["serde1"] }
+tarpc = { git = "https://github.com/axos88/tarpc.git", branch = "customize-shared-context", features = ["serde1"] }
+#tarpc = { path = "../tarpc-new-2/tarpc", features = ["serde1"] }
 #anyhow = "*"
 pin-project = "*"
 futures = "0.3.26"
@@ -29,7 +29,8 @@ byteorder = "1.5.0"
 [dev-dependencies]
 env_logger = "*"
 paho-mqtt = { version = "0.12.0", features = ["bundled"] }
-tarpc = { git = "https://github.com/axos88/tarpc.git", branch = "separate-client-and-server-context", features = ["serde1", "tokio1"] }
+tarpc = { git = "https://github.com/axos88/tarpc.git", branch = "customize-shared-context", features = ["serde1", "tokio1"] }
+#tarpc = { path = "../tarpc-new-2/tarpc", features = ["serde1", "tokio1"] }
 
 
 [[example]]

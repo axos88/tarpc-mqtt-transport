@@ -7,7 +7,7 @@ use futures::StreamExt;
 use log::{info, warn};
 use paho_mqtt::{Property, PropertyCode, SslOptions};
 use tarpc::{client, context};
-use tarpc::context::{ExtractContext};
+use tarpc::context::{DefaultContext, ExtractContext, UpdateContext};
 use tarpc::server::{BaseChannel, Channel};
 use tarpc_mqtt_transport::MqttServerContext;
 
@@ -25,38 +25,39 @@ const REQUEST_TOPIC: &str = "/tarpc-mqtt-example-requests";
 const RESPONSE_TOPIC: &str = "/tarpc-mqtt-example-response";
 
 impl World for HelloServer {
-  type Context = MqttServerContext;
+  type Context = MqttServerContext<DefaultContext>;
   async fn hello(self, ctx: &mut Self::Context, name: String) -> String {
-    println!("Server sees deadline in... {:?}", ctx.deadline.duration_since(Instant::now()));
-    ctx.deadline = ctx.deadline.checked_add(Duration::from_secs(10)).unwrap();
+    println!("Server sees deadline in... {:?}", ctx.shared.deadline.duration_since(Instant::now()));
+    ctx.shared.deadline = ctx.shared.deadline.checked_add(Duration::from_secs(10)).unwrap();
     format!("Hello, {name}!")
   }
 }
 
 
+#[derive(Clone)]
 struct ClientContext {
-  shared: context::Context,
+  shared: context::DefaultContext,
 }
 
-impl ExtractContext<context::Context> for ClientContext {
-  fn extract(&self) -> context::Context {
+impl ExtractContext<context::DefaultContext> for ClientContext {
+  fn extract(&self) -> context::DefaultContext {
     self.shared.clone()
   }
+}
 
-  fn update(&mut self, value: context::Context) {
+impl UpdateContext<context::DefaultContext> for ClientContext {
+  fn update(&mut self, value: context::DefaultContext) {
     self.shared = value;
   }
 }
 
-impl From<context::Context> for ClientContext {
-  fn from(value: context::Context) -> Self {
+impl From<context::DefaultContext> for ClientContext {
+  fn from(value: context::DefaultContext) -> Self {
     Self {
       shared: value,
     }
   }
 }
-
-
 
 async fn client() -> WorldClient::<ClientContext> {
   let transport = tarpc_mqtt_transport::ClientTransport::new(build_mqtt_client().await, REQUEST_TOPIC, RESPONSE_TOPIC);
@@ -69,7 +70,7 @@ async fn server() {
   let transport = tarpc_mqtt_transport::ServerTransport::new(build_mqtt_client().await, REQUEST_TOPIC).await;
 
   tokio::spawn(
-    BaseChannel::with_defaults(transport)
+    BaseChannel::<_, _, _, _, DefaultContext>::with_defaults(transport)
       .execute(HelloServer.serve())
       .for_each(|f|
         async { tokio::spawn(f).await.unwrap()}
@@ -106,7 +107,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
   server().await;
   let client = client().await;
 
-  let mut context = ClientContext::from(context::Context::current());
+  let mut context = ClientContext::from(context::DefaultContext::current());
 
 
   let resp = client.hello(&mut context, "abc".to_string()).await;
