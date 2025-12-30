@@ -6,71 +6,33 @@ use env_logger::Builder;
 use futures::StreamExt;
 use log::{info, warn};
 use paho_mqtt::{Property, PropertyCode, SslOptions};
-use tarpc::{client, context};
-use tarpc::context::{DefaultContext, ExtractContext, UpdateContext};
+use tarpc::{client};
+use tarpc::context::{DefaultContext};
 use tarpc::server::{BaseChannel, Channel};
-use tarpc_mqtt_transport::MqttServerContext;
+use crate::simple_context::ServerContext;
+use crate::simple_service::{HelloServer, World, WorldClient};
 
-#[tarpc::service]
-pub trait World {
-  async fn hello(name: String) -> String;
-}
+mod simple_context;
+mod simple_service;
 
-/// This is the type that implements the generated World trait. It is the business logic
-/// and is used to start the server.
-#[derive(Clone)]
-struct HelloServer;
 
 const REQUEST_TOPIC: &str = "/tarpc-mqtt-example-requests";
 const RESPONSE_TOPIC: &str = "/tarpc-mqtt-example-response";
 
-impl World for HelloServer {
-  type Context = MqttServerContext<DefaultContext>;
-  async fn hello(self, ctx: &mut Self::Context, name: String) -> String {
-    println!("Server sees deadline in... {:?}", ctx.shared.deadline.duration_since(Instant::now()));
-    ctx.shared.deadline = ctx.shared.deadline.checked_add(Duration::from_secs(10)).unwrap();
-    format!("Hello, {name}!")
-  }
-}
 
 
-#[derive(Clone)]
-struct ClientContext {
-  shared: context::DefaultContext,
-}
-
-impl ExtractContext<context::DefaultContext> for ClientContext {
-  fn extract(&self) -> context::DefaultContext {
-    self.shared.clone()
-  }
-}
-
-impl UpdateContext<context::DefaultContext> for ClientContext {
-  fn update(&mut self, value: context::DefaultContext) {
-    self.shared = value;
-  }
-}
-
-impl From<context::DefaultContext> for ClientContext {
-  fn from(value: context::DefaultContext) -> Self {
-    Self {
-      shared: value,
-    }
-  }
-}
-
-async fn client() -> WorldClient::<ClientContext> {
+async fn create_client() -> WorldClient::<DefaultContext> {
   let transport = tarpc_mqtt_transport::ClientTransport::new(build_mqtt_client().await, REQUEST_TOPIC, RESPONSE_TOPIC);
-  let client = WorldClient::<ClientContext>::new(client::Config::default(), transport);
+  let client = WorldClient::new(client::Config::default(), transport);
 
   client.spawn()
 }
 
-async fn server() {
+async fn start_server() {
   let transport = tarpc_mqtt_transport::ServerTransport::new(build_mqtt_client().await, REQUEST_TOPIC).await;
 
   tokio::spawn(
-    BaseChannel::<_, _, _, _, DefaultContext>::with_defaults(transport)
+    BaseChannel::<_, _, _, _, ServerContext>::with_defaults(transport)
       .execute(HelloServer.serve())
       .for_each(|f|
         async { tokio::spawn(f).await.unwrap()}
@@ -104,18 +66,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     .filter(None, log::LevelFilter::Warn)
     .init();
 
-  server().await;
-  let client = client().await;
+  start_server().await;
+  let client = create_client().await;
 
-  let mut context = ClientContext::from(context::DefaultContext::current());
+  let mut context = DefaultContext::current();
 
 
   let resp = client.hello(&mut context, "abc".to_string()).await;
-  warn!("Response = {:?}, deadline = {:?}", resp, context.shared.deadline.duration_since(Instant::now()));
+  warn!("Response = {:?}, deadline = {:?}", resp, context.deadline.duration_since(Instant::now()));
   let resp = client.hello(&mut context, "def".to_string()).await;
-  warn!("Response = {:?}, deadline = {:?}", resp, context.shared.deadline.duration_since(Instant::now()));
+  warn!("Response = {:?}, deadline = {:?}", resp, context.deadline.duration_since(Instant::now()));
   let resp = client.hello(&mut context, "ghi".to_string()).await;
-  warn!("Response = {:?}, deadline = {:?}", resp, context.shared.deadline.duration_since(Instant::now()));
+  warn!("Response = {:?}, deadline = {:?}", resp, context.deadline.duration_since(Instant::now()));
 
   Ok(())
 }
@@ -153,9 +115,9 @@ async fn build_mqtt_client() -> paho_mqtt::AsyncClient {
     .properties(conn_prop)
     .finalize();
 
-  cli.set_connected_callback(|cli| info!("MQTT client {} connected", cli.client_id()));
-  cli.set_disconnected_callback(|cli, p, r| warn!("MQTT client {} disconnected: {:?}, {:?}", cli.client_id(), p, r));
-  cli.set_connection_lost_callback(|cli| warn!("MQTT client {} lost connection", cli.client_id()));
+  cli.set_connected_callback(|cli| println!("MQTT client {} connected", cli.client_id()));
+  cli.set_disconnected_callback(|cli, p, r| println!("MQTT client {} disconnected: {:?}, {:?}", cli.client_id(), p, r));
+  cli.set_connection_lost_callback(|cli| println!("MQTT client {} lost connection", cli.client_id()));
 
   cli.connect(conn_opts).await.unwrap();
 
