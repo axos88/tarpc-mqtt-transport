@@ -6,10 +6,6 @@ mod client_transport;
 mod server_transport;
 mod util;
 
-pub use error::*;
-pub use client_transport::*;
-pub use server_transport::*;
-
-
-
-
+pub use error::Error;
+pub use client_transport::{ClientTransport};
+pub use server_transport::{ServerTransport, MqttContext};
