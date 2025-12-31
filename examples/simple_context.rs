@@ -1,12 +1,12 @@
 use std::time::Instant;
 use tarpc::context::{DefaultContext, ExtractContext, SharedContext};
 use tarpc::trace::Context;
-use tarpc_mqtt_transport::MqttServerContextData;
+use tarpc_mqtt_transport::MqttContext;
 
 #[derive(Debug, Clone)]
 pub struct ServerContext {
   pub shared: DefaultContext,
-  pub mqtt: MqttServerContextData,
+  pub mqtt: MqttContext,
 }
 
 impl SharedContext for ServerContext {
@@ -29,14 +29,14 @@ impl ExtractContext<DefaultContext> for ServerContext {
   }
 }
 
-impl ExtractContext<MqttServerContextData> for ServerContext {
-  fn extract(&self) -> MqttServerContextData {
+impl ExtractContext<MqttContext> for ServerContext {
+  fn extract(&self) -> MqttContext {
     self.mqtt.clone()
   }
 }
 
-impl From<(DefaultContext, MqttServerContextData)> for ServerContext {
-  fn from((shared, mqtt): (DefaultContext, MqttServerContextData)) -> Self {
+impl From<(DefaultContext, MqttContext)> for ServerContext {
+  fn from((shared, mqtt): (DefaultContext, MqttContext)) -> Self {
     ServerContext { shared, mqtt }
   }
 }

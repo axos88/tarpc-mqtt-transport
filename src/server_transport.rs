@@ -12,7 +12,7 @@ use tarpc::context::{ExtractContext, SharedContext};
 use crate::util::{ClientMessageMapper, ResponseMapper};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MqttServerContextData {
+pub struct MqttContext {
     pub response_topic: String,
     pub correlation: Vec<u8>,
 }
@@ -64,7 +64,7 @@ impl<Req, SharedCtx, ServerCtx> ServerTransport<Req, SharedCtx, ServerCtx> {
 impl<Req, Res, SharedCtx, ServerCtx> Sink<Response<ServerCtx, Res>> for ServerTransport<Req, SharedCtx, ServerCtx> where
   Res: Debug + Serialize,
   SharedCtx: SharedContext + Debug + Serialize,
-  ServerCtx: ExtractContext<SharedCtx> + ExtractContext<MqttServerContextData> + Debug
+  ServerCtx: ExtractContext<SharedCtx> + ExtractContext<MqttContext> + Debug
 {
     type Error = crate::Error;
 
@@ -82,7 +82,7 @@ impl<Req, Res, SharedCtx, ServerCtx> Sink<Response<ServerCtx, Res>> for ServerTr
 
         log::info!("Sending response {:?}", response);
 
-        let mqtt: MqttServerContextData = response.context.extract();
+        let mqtt: MqttContext = response.context.extract();
 
         let mut props = Properties::new();
         props.push_binary(PropertyCode::CorrelationData, mqtt.correlation.clone())?;
@@ -123,7 +123,7 @@ impl<Req, Res, SharedCtx, ServerCtx> Sink<Response<ServerCtx, Res>> for ServerTr
 impl<Req, SharedCtx, ServerCtx> ServerTransport<Req, SharedCtx, ServerCtx> where
   Req: DeserializeOwned + Debug,
   SharedCtx: DeserializeOwned + Debug,
-  ServerCtx: From<(SharedCtx, MqttServerContextData)> + Debug
+  ServerCtx: From<(SharedCtx, MqttContext)> + Debug
 
 {
     fn decode_mqtt_message(msg: &Message) -> Result<ClientMessage<ServerCtx, Req>, crate::Error> {
@@ -134,7 +134,7 @@ impl<Req, SharedCtx, ServerCtx> ServerTransport<Req, SharedCtx, ServerCtx> where
         log::info!("Got Client Message {:?}", m);
 
         let mut m = m.map_context(|shared| {
-            let mqtt = MqttServerContextData {
+            let mqtt = MqttContext {
                 response_topic: response_topic.clone(),
                 correlation: correlation.clone()
             };
@@ -161,7 +161,7 @@ impl<Req, SharedCtx, ServerCtx> ServerTransport<Req, SharedCtx, ServerCtx> where
 
 impl<Req, SharedCtx, ServerCtx> Stream for ServerTransport<Req, SharedCtx, ServerCtx> where
   Req: DeserializeOwned + Debug,
-  ServerCtx: From<(SharedCtx, MqttServerContextData)> + Debug,
+  ServerCtx: From<(SharedCtx, MqttContext)> + Debug,
   SharedCtx: DeserializeOwned + Debug
 {
     type Item = Result<ClientMessage<ServerCtx, Req>, crate::Error>;
