@@ -80,7 +80,6 @@ impl<Req, Res, SharedCtx, ServerCtx> Sink<Response<ServerCtx, Res>> for ServerTr
     fn start_send(mut self: Pin<&mut Self>, item: Response<ServerCtx, Res>) -> Result<(), Self::Error> {
         let response = item;
 
-        log::info!("Sending response {:?}", response);
 
         let mqtt: MqttContext = response.context.extract();
 
@@ -89,8 +88,8 @@ impl<Req, Res, SharedCtx, ServerCtx> Sink<Response<ServerCtx, Res>> for ServerTr
         let msg = MessageBuilder::new().topic(&mqtt.response_topic).qos(1).properties(props);
 
         let response: Response<SharedCtx, _> = response.map_context(|ctx| ctx.extract());
-        log::info!("response context =  {:?}", response.context);
 
+        log::debug!("Sending response {:?}", response);
         let data = serde_json::to_vec(&response)?;
         let msg = msg.payload(data).finalize();
         let delivery_token = (&mut self.client).publish(msg);
@@ -131,7 +130,7 @@ impl<Req, SharedCtx, ServerCtx> ServerTransport<Req, SharedCtx, ServerCtx> where
         let response_topic = msg.properties().get_string(PropertyCode::ResponseTopic).ok_or(paho_mqtt::Error::General("Response topic property not found"))?;
         let correlation = msg.properties().get_binary(PropertyCode::CorrelationData).ok_or(paho_mqtt::Error::General("CorrelationData property not found"))?;
 
-        log::info!("Got Client Message {:?}", m);
+        log::debug!("Got Client Message {:?}", m);
 
         let mut m = m.map_context(|shared| {
             let mqtt = MqttContext {
@@ -142,8 +141,6 @@ impl<Req, SharedCtx, ServerCtx> ServerTransport<Req, SharedCtx, ServerCtx> where
             (shared, mqtt).into()
         });
 
-        log::info!("Got Client Message {:?}", m);
-
         let request_id = match m {
             ClientMessage::Request(ref mut r) => &mut r.id,
             ClientMessage::Cancel {ref mut request_id, ..} => request_id,
@@ -151,7 +148,7 @@ impl<Req, SharedCtx, ServerCtx> ServerTransport<Req, SharedCtx, ServerCtx> where
         };
         *request_id = u64::from_str_radix(&sha256::digest(format!("{}/{}", response_topic, request_id))[0..16], 16).expect("Sha256 to return a hexadecimal string");
 
-        log::info!("Transformed Client Message RequestId {:?}", m);
+        log::trace!("Transformed Client Message RequestId {:?}", m);
 
         Ok(m)
     }
