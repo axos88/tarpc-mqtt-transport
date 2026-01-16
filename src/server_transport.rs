@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::task::Poll;
 use tarpc::{ClientMessage, Response};
 use futures::{prelude::*};
-use paho_mqtt::{AsyncReceiver, DeliveryToken, Message, MessageBuilder, Properties, PropertyCode};
+use paho_mqtt::{AsyncReceiver, Binary, DeliveryToken, Message, MessageBuilder, Properties, PropertyCode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tarpc::context::{ExtractContext, SharedContext};
@@ -128,7 +128,7 @@ impl<Req, SharedCtx, ServerCtx> ServerTransport<Req, SharedCtx, ServerCtx> where
     fn decode_mqtt_message(msg: &Message) -> Result<ClientMessage<ServerCtx, Req>, crate::Error> {
         let m: ClientMessage<SharedCtx, Req> = serde_json::from_slice(msg.payload()).map_err(|err| paho_mqtt::Error::GeneralString(format!("Malformed MQTT Message {:?}. Error: {:?}", String::from_utf8_lossy(msg.payload()), err)))?;
         let response_topic = msg.properties().get_string(PropertyCode::ResponseTopic).ok_or(paho_mqtt::Error::General("Response topic property not found"))?;
-        let correlation = msg.properties().get_binary(PropertyCode::CorrelationData).ok_or(paho_mqtt::Error::General("CorrelationData property not found"))?;
+        let correlation = msg.properties().get_binary(PropertyCode::CorrelationData).unwrap_or_default();
 
         log::debug!("Got Client Message {:?}", m);
 
